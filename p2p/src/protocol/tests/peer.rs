@@ -142,11 +142,11 @@ impl Peer {
 
     pub fn step(&mut self, input: Input) {
         self.initialize();
-        self.protocol.step(input, self.time)
+        self.protocol.step(input, self.time).unwrap()
     }
 
     pub fn tick(&mut self) {
-        self.protocol.step(Input::Tick, self.time);
+        self.protocol.step(Input::Tick, self.time).unwrap();
     }
 
     pub fn initialize(&mut self) {

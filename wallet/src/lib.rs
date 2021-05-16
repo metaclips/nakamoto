@@ -1,7 +1,11 @@
 //! A watch-only wallet.
 pub mod logger;
 
-use std::collections::{HashMap, HashSet};
+use std::net::ToSocketAddrs;
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 use std::{fmt, net, thread};
 
 use crossbeam_channel as chan;
@@ -60,6 +64,7 @@ impl<H: Handle> Wallet<H> {
         log::info!("Waiting for peers..");
 
         self.client.wait_for_peers(1)?;
+
         self.client.wait_for_ready()?;
 
         let (height, _) = self.client.get_tip()?;
@@ -78,7 +83,9 @@ impl<H: Handle> Wallet<H> {
         let (filters_send, filters_recv) = chan::bounded(count);
 
         log::info!("Fetching filters in range {}..{}", range.start, range.end);
-        self.client.get_filters(range, filters_send)?;
+        self
+            .client
+            .get_filters(range.clone(), filters_send.clone())?;
 
         let mut filter_height = options.genesis;
         let mut blocks_remaining = HashSet::new();
@@ -163,17 +170,24 @@ impl<H: Handle> Wallet<H> {
 type Reactor = nakamoto_net_poll::Reactor<net::TcpStream>;
 
 /// Entry point for running the wallet.
-pub fn run<S: net::ToSocketAddrs + fmt::Debug>(
-    seed: S,
-    addresses: Vec<Address>,
-    genesis: Height,
-) -> Result<(), Error> {
+pub fn run(addresses: Vec<Address>, genesis: Height) -> Result<(), Error> {
     let mut cfg = Config {
         listen: vec![], // Don't listen for incoming connections.
-        network: Network::Mainnet,
+        network: Network::Testnet,
+        timeout: Duration::from_secs(30 * 60),
         ..Config::default()
     };
-    cfg.seed(&[seed])?;
+
+    let port = cfg.network.port();
+
+    let val: Vec<String> = cfg
+        .network
+        .seeds()
+        .iter()
+        .map(|a| format!("{}:{}", *a, port))
+        .collect();
+
+    cfg.seed(&val)?;
     // TODO: This shouldn't have to be specified manually. We should have a "discovery mode"
     // that can be static or dynamic.
     cfg.target_outbound_peers = cfg.connect.len().min(8);
@@ -184,6 +198,7 @@ pub fn run<S: net::ToSocketAddrs + fmt::Debug>(
 
     // Start the network client in the background.
     thread::spawn(|| client.run().unwrap());
+    handle.connect("213.114.199.135:18333".parse().unwrap()).unwrap();
 
     // Create a new wallet and rescan the chain from the provided `genesis` height for
     // matching addresses.

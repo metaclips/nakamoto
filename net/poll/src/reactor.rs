@@ -144,7 +144,7 @@ impl nakamoto_p2p::reactor::Reactor for Reactor<net::TcpStream> {
 
         // Drain input events in case some were added during the processing of outputs.
         while let Some(event) = self.inputs.pop_front() {
-            protocol.step(event, local_time);
+            protocol.step(event, local_time)?;
 
             if let Control::Shutdown = self.process(&rx, local_time)? {
                 return Ok(());
@@ -240,7 +240,7 @@ impl nakamoto_p2p::reactor::Reactor for Reactor<net::TcpStream> {
             }
 
             while let Some(event) = self.inputs.pop_front() {
-                protocol.step(event, local_time);
+                protocol.step(event, local_time)?;
 
                 if let Control::Shutdown = self.process(&rx, local_time)? {
                     return Ok(());

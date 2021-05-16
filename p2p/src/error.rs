@@ -9,6 +9,8 @@ use crossbeam_channel as crossbeam;
 
 use thiserror::Error;
 
+use crate::protocol::spvmgr;
+
 /// An error occuring in peer-to-peer networking code.
 #[derive(Error, Debug)]
 pub enum Error {
@@ -23,6 +25,10 @@ pub enum Error {
     /// A channel send or receive error.
     #[error("channel error: {0}")]
     Channel(Box<dyn std::error::Error + Send + Sync>),
+
+    /// An spvmgr error.
+    #[error("spv error: {0}")]
+    Spv(spvmgr::Error),
 }
 
 impl<T: Debug + Send + Sync + 'static> From<crossbeam::SendError<T>> for Error {

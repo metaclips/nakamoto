@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use argh::FromArgs;
 
 use bitcoin::Address;
@@ -29,16 +31,17 @@ impl Options {
 }
 
 fn main() {
-    let opts = Options::from_env();
+    //     let flags = ServiceFlags::from(1149);
 
-    let level = if opts.debug {
-        log::Level::Debug
-    } else {
-        log::Level::Info
-    };
-    logger::init(level).expect("initializing logger for the first time");
+    //     println!("{}", flags.has(ServiceFlags::BLOOM));
+    //     println!("{}", flags.has(ServiceFlags::COMPACT_FILTERS));
+    // return;
+    logger::init(log::Level::Debug).expect("initializing logger for the first time");
 
-    if let Err(err) = nakamoto_wallet::run(&opts.connect, opts.addresses, opts.genesis) {
+    if let Err(err) = nakamoto_wallet::run(
+        [Address::from_str("mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt").unwrap()].into(),
+        0,
+    ) {
         log::error!("Fatal: {}", err);
         std::process::exit(1);
     }

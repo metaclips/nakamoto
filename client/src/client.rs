@@ -17,12 +17,15 @@ use nakamoto_chain::block::store;
 use nakamoto_chain::filter;
 use nakamoto_chain::filter::cache::FilterCache;
 
-use nakamoto_common::block::filter::{BlockFilter, Filters};
 use nakamoto_common::block::store::{Genesis as _, Store as _};
 use nakamoto_common::block::time::AdjustedTime;
 use nakamoto_common::block::tree::{self, BlockTree, ImportResult};
 use nakamoto_common::block::{Block, BlockHash, BlockHeader, Height, Transaction};
 use nakamoto_common::p2p::peer::{Source, Store as _};
+use nakamoto_common::{
+    block::filter::{BlockFilter, Filters},
+    source,
+};
 
 pub use nakamoto_common::network::Network;
 
@@ -534,9 +537,9 @@ impl<R: Reactor> handle::Handle for Handle<R> {
 
     /// Subscribe to the event feed, and wait for the given function to return something,
     /// or timeout if the specified amount of time has elapsed.
-    fn wait<F, T>(&self, f: F) -> Result<T, handle::Error>
+    fn wait<F, T>(&self, mut f: F) -> Result<T, handle::Error>
     where
-        F: Fn(Event) -> Option<T>,
+        F: FnMut(Event) -> Option<T>,
     {
         let start = time::Instant::now();
 
@@ -557,6 +560,7 @@ impl<R: Reactor> handle::Handle for Handle<R> {
                     }
                 }
             } else {
+                println!("\n\nHereeee {}", source!());
                 return Err(handle::Error::Timeout);
             }
         }
@@ -564,21 +568,27 @@ impl<R: Reactor> handle::Handle for Handle<R> {
 
     fn wait_for_peers(&self, count: usize) -> Result<(), handle::Error> {
         use std::collections::HashSet;
+        let mut negotiated = HashSet::new();
 
-        self.wait(|e| {
-            let mut negotiated = HashSet::new();
-
+        self.wait(move |e| {
+            println!("\n\n\npeer negotiation wait done");
             match e {
                 Event::PeerManager(peermgr::Event::PeerNegotiated { addr }) => {
                     negotiated.insert(addr);
 
-                    if negotiated.len() == count {
+                    if negotiated.len() >= count {
+                        println!("returned some {:?}", addr);
                         Some(())
                     } else {
+                        println!("returned bb none {:?}", addr);
                         None
                     }
                 }
-                _ => None,
+                _ => {
+                    println!("returned none {:?}", e);
+
+                    None
+                }
             }
         })
     }

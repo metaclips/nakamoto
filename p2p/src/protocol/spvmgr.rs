@@ -55,6 +55,9 @@ pub enum Error {
     /// Error with the underlying filters datastore.
     #[error("filters error: {0}")]
     Filters(#[from] filter::Error),
+    /// A connection error when no peer is connected.
+    #[error("peer not connected")]
+    PeerNotConnected,
 }
 
 /// An event originating in the SPV manager.
@@ -252,10 +255,11 @@ impl<F: Filters, U: SyncFilters + Events + SetTimeout> SpvManager<F, U> {
     }
 
     /// Send a `getcfilters` message to a random peer.
-    ///
-    /// *Panics if there are no peers available.*
-    ///
-    pub fn get_cfilters<T: BlockTree>(&mut self, range: Range<Height>, tree: &T) {
+    pub fn get_cfilters<T: BlockTree>(
+        &mut self,
+        range: Range<Height>,
+        tree: &T,
+    ) -> Result<(), Error> {
         // TODO: Consolidate this code with the `get_cfheaders` code.
         // TODO: Should buffer the request for when new peers connect.
         if let Some(peers) = NonEmpty::from_vec(self.peers.keys().collect()) {
@@ -276,9 +280,10 @@ impl<F: Filters, U: SyncFilters + Events + SetTimeout> SpvManager<F, U> {
                     .get_cfilters(*peer, r.start, stop_hash, timeout);
             }
         } else {
-            // TODO: Return an error instead.
-            panic!("{}: called without any available peers!", source!());
+            return Err(Error::PeerNotConnected);
         }
+
+        Ok(())
     }
 
     /// Handle a `cfheaders` message from a peer.
@@ -571,6 +576,8 @@ impl<F: Filters, U: SyncFilters + Events + SetTimeout> SpvManager<F, U> {
             return None;
         }
 
+        println!("{:#?}", self.peers);
+
         // TODO: We should select peers that are caught up to the requested height.
         if let Some(peers) = NonEmpty::from_vec(self.peers.keys().collect()) {
             let ix = self.rng.usize(..peers.len());
@@ -597,6 +604,7 @@ impl<F: Filters, U: SyncFilters + Events + SetTimeout> SpvManager<F, U> {
     pub fn sync<T: BlockTree>(&mut self, tree: &T, time: LocalTime) {
         let filter_height = self.filters.height();
         let block_height = tree.height();
+        println!("syncing chain");
 
         if filter_height < block_height {
             // We need to sync the filter header chain.

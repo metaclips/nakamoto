@@ -289,6 +289,7 @@ impl<P: Store, U: Events> AddressManager<P, U> {
         }
         let source = Source::Peer(peer);
 
+        println!("{:#?}", addrs);
         self.upstream.event(Event::AddressesReceived {
             count: addrs.len(),
             source,

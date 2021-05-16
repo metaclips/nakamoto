@@ -22,6 +22,7 @@ use pingmgr::PingManager;
 use spvmgr::SpvManager;
 use syncmgr::SyncManager;
 
+use crate::error::Error;
 use crate::event::Event;
 
 use std::collections::HashSet;
@@ -254,7 +255,7 @@ pub trait Machine {
     /// Initialize the state machine. Called once before any event is sent to the state machine.
     fn initialize(&mut self, time: LocalTime);
     /// Process the next input and advance the state machine by one step.
-    fn step(&mut self, input: Input, local_time: LocalTime);
+    fn step(&mut self, input: Input, local_time: LocalTime) -> Result<(), Error>;
 }
 
 /// An instantiation of `Protocol`, for the Bitcoin P2P network. Parametrized over the
@@ -707,7 +708,7 @@ impl<T: BlockTree, F: Filters, P: peer::Store> Machine for Protocol<T, F, P> {
     }
 
     /// Process the next input and advance the state machine by one step.
-    fn step(&mut self, input: Input, local_time: LocalTime) {
+    fn step(&mut self, input: Input, local_time: LocalTime) -> Result<(), Error> {
         self.tick(local_time);
 
         match input {
@@ -797,7 +798,9 @@ impl<T: BlockTree, F: Filters, P: peer::Store> Machine for Protocol<T, F, P> {
                     debug!(target: self.target,
                         "Received command: GetFilters({}..{})", range.start, range.end);
 
-                    self.spvmgr.get_cfilters(range, &self.tree);
+                    self.spvmgr
+                        .get_cfilters(range, &self.tree)
+                        .map_err(|e| Error::Spv(e))?;
                 }
                 Command::GetBlock(hash) => {
                     self.query(NetworkMessage::GetData(vec![Inventory::Block(hash)]), |p| {
@@ -824,5 +827,6 @@ impl<T: BlockTree, F: Filters, P: peer::Store> Machine for Protocol<T, F, P> {
                 self.spvmgr.received_tick(local_time, &self.tree);
             }
         };
+        Ok(())
     }
 }

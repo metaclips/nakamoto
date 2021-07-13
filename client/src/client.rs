@@ -1,5 +1,6 @@
 //! Core nakamoto client functionality. Wraps all the other modules under a unified
 //! interface.
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
@@ -8,8 +9,11 @@ use std::net;
 use std::net::SocketAddr;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::{self, SystemTime};
 
+use bitcoin::network::message_blockdata::Inventory;
 use bitcoin::Txid;
 use crossbeam_channel as chan;
 
@@ -37,11 +41,12 @@ use nakamoto_p2p::protocol::{Command, Protocol};
 
 pub use nakamoto_p2p::event::{self, Event};
 pub use nakamoto_p2p::reactor::Reactor;
-use p2p::protocol::txnmgr::TransactionStatus;
+use p2p::PeerId;
 
 use crate::error::Error;
 use crate::handle;
 use crate::peer;
+use crate::txnmgr;
 
 /// Client configuration.
 #[derive(Debug, Clone)]
@@ -150,7 +155,7 @@ pub struct Client<R: Reactor<Publisher>> {
     events: event::Subscriber<Event>,
     blocks: event::Subscriber<(Block, Height)>,
     filters: event::Subscriber<(BlockFilter, BlockHash, Height)>,
-    transactions: event::Subscriber<(Txid, TransactionStatus)>,
+    transactions: Arc<RwLock<HashMap<Txid, (Transaction, HashSet<PeerId>)>>>,
 
     reactor: R,
 }
@@ -179,13 +184,12 @@ impl<R: Reactor<Publisher>> Client<R> {
             None
         });
 
-        let (transactions_pub, transactions) = event::broadcast(|e| return None);
+        let transactions = Arc::new(RwLock::new(HashMap::new()));
 
         let publisher = Publisher::new()
             .register(event_pub)
             .register(blocks_pub)
-            .register(filters_pub)
-            .register(transactions_pub);
+            .register(filters_pub);
 
         let reactor = R::new(publisher, commands)?;
 
@@ -394,7 +398,7 @@ pub struct Handle<R: Reactor<Publisher>> {
     events: event::Subscriber<Event>,
     blocks: event::Subscriber<(Block, Height)>,
     filters: event::Subscriber<(BlockFilter, BlockHash, Height)>,
-    transactions: event::Subscriber<(Txid, TransactionStatus)>,
+    transactions: Arc<RwLock<HashMap<Txid, (Transaction, HashSet<PeerId>)>>>,
     waker: R::Waker,
     timeout: time::Duration,
 }
@@ -456,6 +460,113 @@ where
     }
 }
 
+impl<R: Reactor<Publisher>> txnmgr::Transaction for Handle<R>
+where
+    R::Waker: Sync,
+{
+    fn submit_transaction(
+        &mut self,
+        txn: Transaction,
+        timeout: time::Duration,
+    ) -> Result<txnmgr::Event, handle::Error> {
+        let tx_id = txn.txid();
+
+        let (transmitter, recvr) = chan::bounded(1);
+        self._command(Command::BroadcastTransactionInv(tx_id, transmitter))?;
+
+        let peers = recvr.recv()?;
+        if peers.is_empty() {
+            return Err(txnmgr::Error::RelayPeer.into());
+        }
+
+        let events = self.events.subscribe();
+        let mut peers_respnded = HashSet::new();
+
+        // Keep on listening for peers that want our transaction till timeout.
+        let result = event::wait(
+            &events,
+            |e| match e {
+                Event::Received(e, NetworkMessage::GetData(inv)) => {
+                    if inv.contains(&Inventory::Transaction(tx_id)) {
+                        let result = self._command(Command::SubmitTransaction(e, txn.clone()));
+                        peers_respnded.insert(e);
+                        return Some(result);
+                    }
+
+                    None
+                }
+                _ => None,
+            },
+            timeout,
+        );
+
+        let peers_responded_len = peers_respnded.len();
+
+        match self.transactions.write() {
+            Ok(mut e) => {
+                e.insert(tx_id, (txn, peers_respnded));
+            }
+            Err(e) => return Err(e.into()),
+        }
+
+        // We have broadcasted the tx ID but couldn't send
+        // tx to peers probably due to a timeout.
+        if peers_responded_len == 0 {
+            return Ok(txnmgr::Event::Pending {
+                announcements: peers.len(),
+                txid: tx_id,
+            });
+        }
+
+        match result? {
+            Ok(_) => Ok(txnmgr::Event::Accepted {
+                confirmations: peers_responded_len,
+                txid: tx_id,
+            }),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn wait(&self, tx_id: Txid, timeout: time::Duration) -> Result<txnmgr::Event, handle::Error> {
+        let mut txn_map = match self.transactions.write() {
+            Ok(e) => e,
+            Err(e) => return Err(e.into()),
+        };
+
+        let events = self.events.subscribe();
+
+        let (txn, addrs) = txn_map
+            .get_mut(&tx_id)
+            .ok_or(handle::Error::Transaction(txnmgr::Error::NotFound))?;
+
+        // Keep on listening for peers that want our transaction till timeout.
+        let result = event::wait(
+            &events,
+            |e| match e {
+                Event::Received(e, NetworkMessage::Inv(inv)) => {
+                    if inv.contains(&Inventory::Transaction(tx_id)) {
+                        let result = self._command(Command::SubmitTransaction(e, txn.to_owned()));
+                        addrs.insert(e);
+                        return Some(result);
+                    }
+
+                    None
+                }
+                _ => None,
+            },
+            timeout,
+        );
+
+        match result? {
+            Ok(_) => Ok(txnmgr::Event::Pending {
+                announcements: addrs.len(),
+                txid: tx_id,
+            }),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 impl<R: Reactor<Publisher>> handle::Handle for Handle<R>
 where
     R::Waker: Sync,
@@ -489,10 +600,6 @@ where
 
     fn filters(&self) -> chan::Receiver<(BlockFilter, BlockHash, Height)> {
         self.filters.subscribe()
-    }
-
-    fn transactions(&self) -> chan::Receiver<(bitcoin::Txid, TransactionStatus)> {
-        self.transactions.subscribe()
     }
 
     fn command(&self, cmd: Command) -> Result<(), handle::Error> {
@@ -561,12 +668,6 @@ where
 
     fn import_addresses(&self, addrs: Vec<Address>) -> Result<(), handle::Error> {
         self.command(Command::ImportAddresses(addrs))?;
-
-        Ok(())
-    }
-
-    fn submit_transaction(&self, tx: Transaction) -> Result<(), handle::Error> {
-        self.command(Command::SubmitTransaction(tx))?;
 
         Ok(())
     }
